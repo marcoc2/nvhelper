@@ -1,0 +1,14 @@
+[Unit]
+Description=NVIDIA GPU Communication Watchdog
+After=nvidia-persistenced.service
+
+[Service]
+Type=simple
+# Update ExecStart path to match your installation
+ExecStart=/usr/local/bin/nvidia-gpu-watchdog
+Restart=on-failure
+RestartSec=10
+Environment=GPU_WATCHDOG_INTERVAL=30
+
+[Install]
+WantedBy=multi-user.target
