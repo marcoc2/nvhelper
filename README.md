@@ -48,8 +48,36 @@ If Fix 1 alone doesn't solve it, apply incrementally:
 | 1 | `fixes/01_preserve_vram_*` | Enable VRAM preservation + fbdev | **High** | Yes |
 | 2 | `fixes/02_persistence_mode_*` | Enable nvidia-persistenced persistence mode | Medium | No |
 | 3 | `fixes/03_pcie_aspm_*` | Disable PCIe ASPM via GRUB | Low | Yes |
+| 4 | `fixes/04_blacklist_ucsi_*` | Blacklist `ucsi_acpi` (see below) | Medium | Yes |
 
 Each fix has an `_apply.sh` and `_revert.sh` script.
+
+## Related issue — session crash on external monitor connect
+
+Separate from the suspend/resume VRAM loss above: connecting an external
+monitor through the USB-C/Thunderbolt dock can kill the desktop session
+(GNOME reports `gnome-session-failed.target` and forces a relogin). This is
+not an Xid error and not a GPU crash — `nvidia-smi` stays healthy through it.
+
+Root cause found in `journalctl -b -k`: the kernel's UCSI connector-change
+handler hogs the CPU while negotiating the dock connection —
+`workqueue: ucsi_handle_connector_change [typec_ucsi] hogged CPU for
+>10000us`, preceded by `ucsi_acpi USBC000:00: UCSI_GET_PDOS failed (-5)`.
+Long enough of that and `gnome-shell` stops responding, so `gnome-session`
+declares the session failed and tears it down. This is a widely reported
+Linux kernel/firmware quirk on Intel USB-C controllers (Framework, Dell XPS,
+ThinkPad, others), independent of the NVIDIA driver.
+
+Session type (X11 vs Wayland) is not a reliable fix here — the CPU-hogging
+happens in the kernel before either display server gets a say, and NVIDIA's
+own hybrid + Wayland + external-monitor-hotplug combination has open bugs of
+its own (displays going permanently blank on hotplug), so switching to
+Wayland was ruled out for this laptop.
+
+Workaround: `fixes/04_blacklist_ucsi_*` blocks the `ucsi_acpi` module. Needs
+a reboot, and needs verifying afterward that dock charging and USB-C role
+negotiation still work, since `ucsi_acpi` also carries USB Power Delivery
+reporting — see the script's own comments before running it.
 
 ## Diagnostic Tools
 
