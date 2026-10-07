@@ -49,6 +49,7 @@ If Fix 1 alone doesn't solve it, apply incrementally:
 | 2 | `fixes/02_persistence_mode_*` | Enable nvidia-persistenced persistence mode | Medium | No |
 | 3 | `fixes/03_pcie_aspm_*` | Disable PCIe ASPM via GRUB | Low | Yes |
 | 4 | `fixes/04_blacklist_ucsi_*` | Blacklist `ucsi_acpi` (see below) | Medium | Yes |
+| 5 | `fixes/05_shell_restart_grace_*` | Space out gnome-shell restarts — safety net only, the real fix is a mutter update (see below) | Low | No |
 
 Each fix has an `_apply.sh` and `_revert.sh` script.
 
@@ -78,6 +79,70 @@ Workaround: `fixes/04_blacklist_ucsi_*` blocks the `ucsi_acpi` module. Needs
 a reboot, and needs verifying afterward that dock charging and USB-C role
 negotiation still work, since `ucsi_acpi` also carries USB Power Delivery
 reporting — see the script's own comments before running it.
+
+## Related issue — session crash on resume with an external monitor
+
+Also separate from the VRAM loss: with Fix 1 in place `nvidia-smi` survives
+resume, yet the desktop session can still die a few seconds after waking up.
+It only shows up when an external monitor is attached to the NVIDIA HDMI
+port across the suspend; resumes with just the laptop panel came back clean.
+
+Sequence in `journalctl -b`:
+
+1. Xorg: `(WW) NVIDIA: Wait for channel idle timed out.` (two or three
+   times, 5–10s apart), and GL clients log `GL_GUILTY_CONTEXT_RESET_KHR`.
+2. mutter sees the reset and re-execs gnome-shell (`Running GNOME Shell` with
+   the same PID).
+3. The new instance aborts with `Another compositing manager is already
+   running on screen 0`. Despite the message, no other compositor exists:
+   the X error is BadAccess on Composite `RedirectSubwindows(root, Manual)`,
+   and mutter causes it itself. While adopting the windows that are already
+   open — left as unframed children of the root once the old shell's frames
+   died — it redirects each of them with `RedirectWindow(Manual)` before
+   redirecting the root's children, and the server refuses the second manual
+   redirection of those windows. Every start with windows open fails the
+   same way, so waiting or retrying never helps.
+4. `org.gnome.Shell@x11.service` keeps retrying, every failed start fires
+   `OnFailure=gnome-session-failed.target`, and the "Oh no! Something has
+   gone wrong" screen only offers Log Out.
+
+This is mutter bug [LP #2040453](https://bugs.launchpad.net/bugs/2040453)
+("restarting gnome-shell on X11 crashes the session unless every application
+is closed first"), fixed in Ubuntu's `mutter 46.2-1ubuntu0.24.04.5`. The
+affected machine was still on `46.2-1ubuntu0.24.04.1`: unattended-upgrades
+only installs security updates, and mutter ships through `noble-updates`.
+
+No Xid is logged and the GPU stays usable, so the NVIDIA part is a stall in
+the X driver's channel recovery, not a lost GPU. That stall still happens
+after the update; the difference is that the shell now restarts with the
+windows in place instead of taking the session down.
+
+### Fix: update mutter and gnome-shell
+
+```bash
+dpkg -l libmutter-14-0 | awk '/^ii/{print $3}'   # needs >= 46.2-1ubuntu0.24.04.5
+sudo apt install -o APT::Get::Always-Include-Phased-Updates=true \
+    libmutter-14-0 gir1.2-mutter-14 mutter-common mutter-common-bin \
+    gnome-shell gnome-shell-common
+```
+
+The phased-updates option only matters while the newest mutter build is still
+being phased in; without it `apt` keeps the packages back. Log out and back in
+afterwards, since the running shell keeps the old library loaded.
+
+To verify, follow the test plan from the bug report: open a few windows, press
+Alt+F2, type `r`, press Enter. The shell reloads and the windows stay open.
+
+### Safety net: Fix 5
+
+`fixes/05_shell_restart_grace_*` installs a systemd `--user` drop-in for
+`org.gnome.Shell@x11.service` that spaces retries 5s apart (up to 10 within
+2 minutes) with `RestartMode=direct`, so intermediate failures do not bring
+up the failure screen. It fixes nothing on its own — on the old mutter all ten
+retries failed — but it gives the shell more chances if a restart happens
+while the GPU is still recovering. Run it as the desktop user, not with sudo;
+it takes effect immediately.
+
 
 ## Diagnostic Tools
 
