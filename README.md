@@ -143,6 +143,45 @@ retries failed — but it gives the shell more chances if a restart happens
 while the GPU is still recovering. Run it as the desktop user, not with sudo;
 it takes effect immediately.
 
+### Side effect: screens blank after a few seconds idle
+
+Even when the shell restart succeeds, `gsd-power` can lose its connection to
+mutter's idle monitor in the process. The journal shows it in the same second
+as the shell restart:
+
+```
+gsd-power: Failed to acquire idle monitor proxy: GDBus.Error:org.freedesktop.DBus.Error.NoReply: Message recipient disconnected from message bus without replying
+```
+
+From then on both screens go black together after a few seconds without
+keyboard or mouse input and come back as soon as there is input, regardless of
+`org.gnome.desktop.session idle-delay` (it was `0`, i.e. never). It is a DPMS
+power-off, not a GPU or cable problem: the X framebuffer keeps its contents
+while the outputs are off, and `dbus-monitor` shows `gsd-power` setting
+`PowerSaveMode` on `org.gnome.Mutter.DisplayConfig` to `3` (off) and back to
+`0` on every blackout.
+
+Check:
+
+```bash
+journalctl --user -b -u org.gnome.SettingsDaemon.Power.service | grep "idle monitor proxy"
+dbus-monitor --session "type='method_call',member='Set',path='/org/gnome/Mutter/DisplayConfig'"
+```
+
+Fix, without logging out — restart `gsd-power`:
+
+```bash
+systemctl --user kill org.gnome.SettingsDaemon.Power.service
+systemctl --user restart org.gnome.SettingsDaemon.Power.target
+systemctl --user show org.gnome.SettingsDaemon.Power.service -p MainPID -p ActiveEnterTimestamp
+```
+
+The service refuses a plain `systemctl --user restart` (`RefuseManualStart`
+and `RefuseManualStop`), and after `kill` it stays down instead of restarting
+on its own; restarting its target pulls it back in as a dependency. Neither
+step touches the rest of the session. The last command should show a new PID
+and a start time of a few seconds ago.
+
 
 ## Diagnostic Tools
 
